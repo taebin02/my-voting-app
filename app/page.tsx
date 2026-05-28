@@ -21,7 +21,7 @@ const initialCandidates: Candidate[] = [
   {
     id: 1,
     number: 1,
-    name: "김민준",
+    name: "김민범",
     role: "회장",
     bio: "적극적인 소통으로 모두가 행복한 학급을 만들겠습니다.",
     votes: 7,
