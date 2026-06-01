@@ -3,7 +3,7 @@ import { useState, useEffect } from "react";
 import { ethers } from "ethers";
 import VotingABI from "../lib/Voting.json";
 
-const CONTRACT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+const CONTRACT_ADDRESS = "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9";
 
 export default function Home() {
   const [account, setAccount] = useState<string>("");
@@ -13,7 +13,7 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState("vote");
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState("");
-  const [totalVoters] = useState(32);
+  const [totalVoters, setTotalVoters] = useState(0);
   const [remainingTime, setRemainingTime] = useState<string>("");
 
   const connectWallet = async () => {
@@ -35,6 +35,8 @@ export default function Home() {
     if (!contract) return;
     try {
       const count = await contract.getCandidateCount();
+      const vc = await contract.voterCount();
+      setTotalVoters(Number(vc));
       const list = [];
       for (let i = 0; i < Number(count); i++) {
         const c = await contract.candidates(i);
