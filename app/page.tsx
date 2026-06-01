@@ -1,609 +1,293 @@
-"use client"
+"use client";
+import { useState, useEffect } from "react";
+import { ethers } from "ethers";
+import VotingABI from "../lib/Voting.json";
 
-import { useState, useEffect } from "react"
-import { Clock, Trash2 } from "lucide-react"
+const CONTRACT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
 
-type Candidate = {
-  id: number
-  number: number
-  name: string
-  role: string
-  bio: string
-  votes: number
-}
+export default function Home() {
+  const [account, setAccount] = useState<string>("");
+  const [contract, setContract] = useState<ethers.Contract | null>(null);
+  const [candidates, setCandidates] = useState<any[]>([]);
+  const [hasVoted, setHasVoted] = useState(false);
+  const [activeTab, setActiveTab] = useState("vote");
+  const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState("");
+  const [totalVoters] = useState(32);
+  const [remainingTime, setRemainingTime] = useState<string>("");
 
-type Voter = {
-  id: number
-  address: string
-}
+  const connectWallet = async () => {
+    if (!(window as any).ethereum) { alert("MetaMask를 설치해주세요!"); return; }
+    try {
+      await (window as any).ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x7A69" }] });
+      const provider = new ethers.BrowserProvider((window as any).ethereum);
+      await provider.send("eth_requestAccounts", []);
+      const signer = await provider.getSigner();
+      const address = await signer.getAddress();
+      setAccount(address);
+      const c = new ethers.Contract(CONTRACT_ADDRESS, VotingABI.abi, signer);
+      setContract(c);
+      showToast("지갑 연결 완료");
+    } catch (e: any) { alert("연결 오류: " + e.message); }
+  };
 
-const initialCandidates: Candidate[] = [
-  {
-    id: 1,
-    number: 1,
-    name: "김민범",
-    role: "회장",
-    bio: "적극적인 소통으로 모두가 행복한 학급을 만들겠습니다.",
-    votes: 7,
-  },
-  {
-    id: 2,
-    number: 2,
-    name: "이서연",
-    role: "부회장",
-    bio: "학급의 화합과 단결을 위해 최선을 다하겠습니다.",
-    votes: 5,
-  },
-  {
-    id: 3,
-    number: 3,
-    name: "박지호",
-    role: "총무",
-    bio: "투명하고 공정한 학급 운영을 약속드립니다.",
-    votes: 4,
-  },
-  {
-    id: 4,
-    number: 4,
-    name: "최예린",
-    role: "서기",
-    bio: "꼼꼼한 기록으로 학급 활동을 빠짐없이 남기겠습니다.",
-    votes: 2,
-  },
-]
+  const loadCandidates = async () => {
+    if (!contract) return;
+    try {
+      const count = await contract.getCandidateCount();
+      const list = [];
+      for (let i = 0; i < Number(count); i++) {
+        const c = await contract.candidates(i);
+        list.push({ name: c.name, role: c.role, voteCount: Number(c.voteCount) });
+      }
+      setCandidates(list);
+    } catch (e) { console.error("loadCandidates error:", e); }
+  };
 
-export default function ElectionPage() {
-  const [activeTab, setActiveTab] = useState<"vote" | "results" | "admin">("vote")
-  const [candidates, setCandidates] = useState<Candidate[]>(initialCandidates)
-  const [votedCandidateId, setVotedCandidateId] = useState<number | null>(null)
-  const [showToast, setShowToast] = useState(false)
-  const [confirmModal, setConfirmModal] = useState<{ isOpen: boolean; candidate: Candidate | null }>({
-    isOpen: false,
-    candidate: null,
-  })
-  const [animateResults, setAnimateResults] = useState(false)
-  const [voters, setVoters] = useState<Voter[]>([
-    { id: 1, address: "0x1a2b3c4d5e6f7890abcdef1234567890abcdef12" },
-    { id: 2, address: "0x9876543210fedcba9876543210fedcba98765432" },
-  ])
-  const [totalVoters] = useState(32)
-  const [electionEnded, setElectionEnded] = useState(false)
+  const vote = async (index: number) => {
+    if (!contract) { alert("지갑을 먼저 연결해주세요!"); return; }
+    setLoading(true);
+    try {
+      const tx = await contract.vote(index);
+      await tx.wait();
+      setHasVoted(true);
+      showToast("투표가 완료되었습니다 ✓");
+      loadCandidates();
+    } catch (e: any) { alert("오류: " + (e.reason || e.message)); }
+    setLoading(false);
+  };
 
-  // Admin state
-  const [newVoterAddress, setNewVoterAddress] = useState("")
-  const [newCandidateName, setNewCandidateName] = useState("")
-  const [newCandidateRole, setNewCandidateRole] = useState("")
-  const [newCandidateNumber, setNewCandidateNumber] = useState("")
-  const [newCandidateBio, setNewCandidateBio] = useState("")
-  const [startTime, setStartTime] = useState("2026-06-17T09:00")
-  const [endTime, setEndTime] = useState("2026-06-17T11:50")
-  const [isElectionActive, setIsElectionActive] = useState(true)
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(""), 3000);
+  };
 
-  const totalVotes = candidates.reduce((sum, c) => sum + c.votes, 0)
-  const maxVotes = Math.max(...candidates.map((c) => c.votes))
+  useEffect(() => { if (contract) loadCandidates(); }, [contract]);
+  useEffect(() => { if (contract && activeTab === "results") loadCandidates(); }, [activeTab]);
 
-  // Live simulation
+  // 남은 시간 카운트다운
   useEffect(() => {
-    if (activeTab !== "results" || electionEnded) return
+    if (!contract) return;
+    let interval: NodeJS.Timeout;
+    const fetchEndTime = async () => {
+      try {
+        const endTime = await contract.endTime();
+        interval = setInterval(() => {
+          const now = Math.floor(Date.now() / 1000);
+          const diff = Number(endTime) - now;
+          if (diff <= 0) {
+            setRemainingTime("투표 종료");
+            clearInterval(interval);
+          } else {
+            const h = Math.floor(diff / 3600);
+            const m = Math.floor((diff % 3600) / 60);
+            const s = diff % 60;
+            setRemainingTime(`${h}시간 ${m}분 ${s}초`);
+          }
+        }, 1000);
+      } catch (e) { console.error(e); }
+    };
+    fetchEndTime();
+    return () => clearInterval(interval);
+  }, [contract]);
 
-    const interval = setInterval(() => {
-      setCandidates((prev) => {
-        const currentTotal = prev.reduce((sum, c) => sum + c.votes, 0)
-        if (currentTotal >= totalVoters) {
-          setElectionEnded(true)
-          return prev
-        }
-
-        const randomIndex = Math.floor(Math.random() * prev.length)
-        return prev.map((c, i) =>
-          i === randomIndex ? { ...c, votes: c.votes + 1 } : c
-        )
-      })
-    }, 5000)
-
-    return () => clearInterval(interval)
-  }, [activeTab, electionEnded, totalVoters])
-
-  const handleVote = (candidateId: number) => {
-    if (votedCandidateId !== null) return
-    const candidate = candidates.find((c) => c.id === candidateId)
-    if (candidate) {
-      setConfirmModal({ isOpen: true, candidate })
-    }
-  }
-
-  const confirmVote = () => {
-    if (!confirmModal.candidate || votedCandidateId !== null) return
-    const candidateId = confirmModal.candidate.id
-    setVotedCandidateId(candidateId)
-    setCandidates((prev) =>
-      prev.map((c) => (c.id === candidateId ? { ...c, votes: c.votes + 1 } : c))
-    )
-    setConfirmModal({ isOpen: false, candidate: null })
-    setShowToast(true)
-    setTimeout(() => setShowToast(false), 3000)
-  }
-
-  const cancelVote = () => {
-    setConfirmModal({ isOpen: false, candidate: null })
-  }
-
-  const handleTabChange = (tab: typeof activeTab) => {
-    setActiveTab(tab)
-    if (tab === "results") {
-      setAnimateResults(false)
-      setTimeout(() => setAnimateResults(true), 50)
-    }
-  }
-
-  const addVoter = () => {
-    if (!newVoterAddress.trim()) return
-    setVoters((prev) => [
-      ...prev,
-      { id: Date.now(), address: newVoterAddress.trim() },
-    ])
-    setNewVoterAddress("")
-  }
-
-  const removeVoter = (id: number) => {
-    setVoters((prev) => prev.filter((v) => v.id !== id))
-  }
-
-  const addCandidate = () => {
-    if (!newCandidateName.trim() || !newCandidateRole.trim() || !newCandidateNumber.trim()) return
-    setCandidates((prev) => [
-      ...prev,
-      {
-        id: Date.now(),
-        number: parseInt(newCandidateNumber),
-        name: newCandidateName.trim(),
-        role: newCandidateRole.trim(),
-        bio: newCandidateBio.trim(),
-        votes: 0,
-      },
-    ])
-    setNewCandidateName("")
-    setNewCandidateRole("")
-    setNewCandidateNumber("")
-    setNewCandidateBio("")
-  }
-
-  const removeCandidate = (id: number) => {
-    setCandidates((prev) => prev.filter((c) => c.id !== id))
-  }
+  const totalVotes = candidates.reduce((sum, c) => sum + c.voteCount, 0);
+  const turnout = totalVoters > 0 ? ((totalVotes / totalVoters) * 100).toFixed(1) : "0";
+  const maxVotes = Math.max(...candidates.map(c => c.voteCount), 1);
 
   return (
-    <div className="min-h-screen bg-[#F9FAFB]">
-      {/* Navigation */}
-      <nav className="bg-white border-b border-[#E5E7EB] px-6 py-4">
-        <div className="max-w-5xl mx-auto flex items-center justify-between">
-          <h1 className="text-lg font-semibold text-[#111827]">
-            🗳️ 학급 임원 선거 2026
-          </h1>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 bg-[#F9FAFB] px-3 py-1.5 rounded-full border border-[#E5E7EB]">
-              <span className="w-2 h-2 bg-green-500 rounded-full" />
-              <span className="text-sm text-[#6B7280] font-mono">
-                0x1a2b...3c4d
-              </span>
-            </div>
-            <button className="text-sm text-[#6B7280] hover:text-[#111827]">
-              연결 해제
+    <div style={{ fontFamily: "Inter, sans-serif", background: "#F9FAFB", minHeight: "100vh" }}>
+      {/* 네비게이션 */}
+      <nav style={{ background: "#fff", borderBottom: "1px solid #E5E7EB", padding: "0 32px", height: 64, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ fontWeight: 600, fontSize: 18 }}>🗳️ 학급 임원 선거 2026</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {remainingTime && (
+            <span style={{ fontSize: 13, color: "#7C3AED", fontWeight: 500, background: "#EDE9FE", padding: "4px 12px", borderRadius: 8 }}>
+              ⏱ {remainingTime}
+            </span>
+          )}
+          {account ? (
+            <span style={{ fontSize: 13, color: "#6B7280", display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#10B981", display: "inline-block" }} />
+              {account.slice(0, 6)}...{account.slice(-4)}
+            </span>
+          ) : (
+            <button onClick={connectWallet} style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontSize: 13 }}>
+              지갑 연결
             </button>
-          </div>
+          )}
         </div>
       </nav>
 
-      {/* Tabs */}
-      <div className="bg-white border-b border-[#E5E7EB]">
-        <div className="max-w-5xl mx-auto flex">
-          {[
-            { key: "vote", label: "투표하기" },
-            { key: "results", label: "실시간 결과" },
-            { key: "admin", label: "관리자" },
-          ].map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => handleTabChange(tab.key as typeof activeTab)}
-              className={`px-6 py-3 text-sm font-medium transition-colors ${
-                activeTab === tab.key
-                  ? "text-[#7C3AED] border-b-2 border-[#7C3AED]"
-                  : "text-[#6B7280] hover:text-[#111827]"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+      {/* 탭 */}
+      <div style={{ background: "#fff", borderBottom: "1px solid #E5E7EB", padding: "0 32px", display: "flex", gap: 0 }}>
+        {[["vote", "투표하기"], ["results", "실시간 결과"], ["admin", "관리자"]].map(([key, label]) => (
+          <button key={key} onClick={() => setActiveTab(key)} style={{ padding: "16px 20px", border: "none", background: "none", cursor: "pointer", fontSize: 14, fontWeight: 500, color: activeTab === key ? "#7C3AED" : "#6B7280", borderBottom: activeTab === key ? "2px solid #7C3AED" : "2px solid transparent" }}>
+            {label}
+          </button>
+        ))}
       </div>
 
-      {/* Content */}
-      <main className="max-w-5xl mx-auto px-6 py-8">
-        {/* Tab 1: Voting */}
+      <div style={{ maxWidth: 800, margin: "0 auto", padding: 32 }}>
+
+        {/* 투표하기 탭 */}
         {activeTab === "vote" && (
           <div>
-            <div className="mb-6">
-              <h2 className="text-xl font-semibold text-[#111827] mb-1">
-                후보자를 선택하세요
-              </h2>
-              <p className="text-sm text-[#6B7280]">
-                1인 1표 · 중복 투표 불가
-              </p>
-            </div>
+            <h2 style={{ fontSize: 22, fontWeight: 600, marginBottom: 4 }}>후보자를 선택하세요</h2>
+            <p style={{ color: "#6B7280", fontSize: 14, marginBottom: 24 }}>1인 1표 · 중복 투표 불가</p>
+            {candidates.length === 0 ? (
+              <div style={{ textAlign: "center", padding: 48, color: "#9CA3AF" }}>
+                <p>등록된 후보자가 없습니다.</p>
+                <p style={{ fontSize: 13 }}>관리자 탭에서 후보자를 등록해주세요.</p>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                {candidates.map((c, i) => (
+                  <div key={i} style={{ background: "#fff", border: hasVoted ? "2px solid #E5E7EB" : "1px solid #E5E7EB", borderRadius: 12, padding: 20 }}>
+                    <span style={{ background: "#EDE9FE", color: "#7C3AED", fontSize: 11, fontWeight: 500, padding: "2px 8px", borderRadius: 6 }}>기호 {i + 1}번</span>
+                    <h3 style={{ fontSize: 18, fontWeight: 600, margin: "8px 0 4px" }}>{c.name}</h3>
+                    <p style={{ color: "#7C3AED", fontSize: 13, margin: "0 0 8px" }}>{c.role}</p>
+                    <button onClick={() => !hasVoted && vote(i)} disabled={hasVoted || loading} style={{ width: "100%", padding: "10px", border: "1px solid #7C3AED", borderRadius: 8, background: hasVoted ? "#F3F4F6" : "#fff", color: hasVoted ? "#9CA3AF" : "#7C3AED", cursor: hasVoted ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 500 }}>
+                      {loading ? "처리중..." : hasVoted ? "투표 완료" : "투표하기"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
-            <div className="inline-flex items-center gap-2 bg-[#F3F4F6] px-4 py-2 rounded-full mb-8">
-              <Clock className="w-4 h-4 text-[#6B7280]" />
-              <span className="text-sm text-[#6B7280]">
-                투표 기간: 2026.06.17 09:00 ~ 11:50
+        {/* 실시간 결과 탭 */}
+        {activeTab === "results" && (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+              <h2 style={{ fontSize: 22, fontWeight: 600 }}>실시간 투표 현황</h2>
+              <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#10B981" }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#10B981", display: "inline-block" }} />
+                LIVE
               </span>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {candidates.map((candidate) => (
-                <div
-                  key={candidate.id}
-                  className={`relative bg-white rounded-xl p-5 border ${
-                    votedCandidateId === candidate.id
-                      ? "border-2 border-[#7C3AED]"
-                      : "border-[#E5E7EB]"
-                  }`}
-                >
-                  <span className="inline-block bg-[#EDE9FE] text-[#7C3AED] text-xs font-medium px-2 py-1 rounded mb-3">
-                    기호 {candidate.number}번
-                  </span>
-
-                  {votedCandidateId === candidate.id && (
-                    <span className="absolute top-4 right-4 inline-flex items-center gap-1 bg-green-100 text-green-700 text-xs font-medium px-2 py-1 rounded">
-                      ✓ 투표 완료
-                    </span>
-                  )}
-
-                  <h3 className="text-lg font-semibold text-[#111827] mb-1">
-                    {candidate.name}
-                  </h3>
-                  <p className="text-sm text-[#7C3AED] font-medium mb-2">
-                    {candidate.role}
-                  </p>
-                  <p className="text-sm text-[#6B7280] mb-4 line-clamp-2">
-                    {candidate.bio}
-                  </p>
-
-                  <button
-                    onClick={() => handleVote(candidate.id)}
-                    disabled={votedCandidateId !== null}
-                    className={`w-full py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                      votedCandidateId !== null
-                        ? "border border-[#E5E7EB] text-[#9CA3AF] cursor-not-allowed"
-                        : "border border-[#7C3AED] text-[#7C3AED] hover:bg-[#7C3AED] hover:text-white"
-                    }`}
-                  >
-                    투표하기
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Tab 2: Results */}
-        {activeTab === "results" && (
-          <div>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-semibold text-[#111827]">
-                실시간 투표 현황
-              </h2>
-              <div className="flex items-center gap-2">
-                <span className="relative flex h-2.5 w-2.5">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500" />
-                </span>
-                <span className="text-sm font-medium text-green-600">LIVE</span>
-              </div>
-            </div>
-
-            {electionEnded && (
-              <div className="bg-[#FEF3C7] border border-[#F59E0B] text-[#92400E] px-4 py-3 rounded-lg mb-6 text-sm font-medium">
-                투표가 종료되었습니다
+            {/* 남은 시간 카드 */}
+            {remainingTime && (
+              <div style={{ background: remainingTime === "투표 종료" ? "#FEE2E2" : "#EDE9FE", borderRadius: 12, padding: 20, marginBottom: 24, textAlign: "center" }}>
+                <p style={{ fontSize: 13, color: "#6B7280", margin: "0 0 8px" }}>남은 투표 시간</p>
+                <p style={{ fontSize: 32, fontWeight: 700, color: remainingTime === "투표 종료" ? "#EF4444" : "#7C3AED", margin: 0 }}>
+                  ⏱ {remainingTime}
+                </p>
               </div>
             )}
 
-            {/* Metric Cards */}
-            <div className="grid grid-cols-3 gap-4 mb-8">
-              <div className="bg-[#EDE9FE] rounded-xl p-4">
-                <p className="text-sm text-[#6B7280] mb-1">총 유권자</p>
-                <p className="text-2xl font-bold text-[#111827]">
-                  {totalVoters}명
-                </p>
-              </div>
-              <div className="bg-[#E0F2FE] rounded-xl p-4">
-                <p className="text-sm text-[#6B7280] mb-1">투표 완료</p>
-                <p className="text-2xl font-bold text-[#111827]">
-                  {totalVotes}명
-                </p>
-              </div>
-              <div className="bg-[#D1FAE5] rounded-xl p-4">
-                <p className="text-sm text-[#6B7280] mb-1">투표율</p>
-                <p className="text-2xl font-bold text-[#111827]">
-                  {((totalVotes / totalVoters) * 100).toFixed(1)}%
-                </p>
-              </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}>
+              {[["총 유권자", `${totalVoters}명`, "#EDE9FE"], ["투표 완료", `${totalVotes}명`, "#E0F2FE"], ["투표율", `${turnout}%`, "#D1FAE5"]].map(([label, value, bg]) => (
+                <div key={label} style={{ background: bg, borderRadius: 12, padding: 20 }}>
+                  <p style={{ fontSize: 13, color: "#6B7280", margin: "0 0 8px" }}>{label}</p>
+                  <p style={{ fontSize: 28, fontWeight: 700, margin: 0 }}>{value}</p>
+                </div>
+              ))}
             </div>
-
-            {/* Bar Chart */}
-            <div className="bg-white rounded-xl border border-[#E5E7EB] p-6">
-              <h3 className="text-lg font-semibold text-[#111827] mb-6">
-                후보별 득표 현황
-              </h3>
-              <div className="space-y-4">
-                {candidates
-                  .slice()
-                  .sort((a, b) => b.votes - a.votes)
-                  .map((candidate) => {
-                    const percentage =
-                      totalVotes > 0
-                        ? ((candidate.votes / totalVotes) * 100).toFixed(1)
-                        : "0.0"
-                    const isLeading = candidate.votes === maxVotes && maxVotes > 0
-
-                    return (
-                      <div key={candidate.id} className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-[#111827]">
-                              {candidate.name}
-                            </span>
-                            <span className="text-xs bg-[#F3F4F6] text-[#6B7280] px-2 py-0.5 rounded">
-                              {candidate.role}
-                            </span>
-                            {isLeading && (
-                              <span className="text-xs bg-[#FEF3C7] text-[#92400E] px-2 py-0.5 rounded font-medium">
-                                🏆 선두
-                              </span>
-                            )}
-                          </div>
-                          <span className="text-sm text-[#6B7280]">
-                            {candidate.votes}표 ({percentage}%)
-                          </span>
-                        </div>
-                        <div className="h-10 bg-[#F3F4F6] rounded overflow-hidden">
-                          <div
-                            className={`h-full rounded-r transition-all duration-[800ms] ease-out ${
-                              isLeading ? "bg-[#5B21B6]" : "bg-[#7C3AED]"
-                            }`}
-                            style={{
-                              width: animateResults
-                                ? maxVotes > 0
-                                  ? `${(candidate.votes / maxVotes) * 100}%`
-                                  : "0%"
-                                : "0%",
-                            }}
-                          />
-                        </div>
-                      </div>
-                    )
-                  })}
-              </div>
+            <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #E5E7EB", padding: 24 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 20 }}>후보별 득표 현황</h3>
+              {candidates.map((c, i) => (
+                <div key={i} style={{ marginBottom: 20 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                    <span style={{ fontWeight: 500 }}>{c.name} <span style={{ fontSize: 12, color: "#7C3AED", background: "#EDE9FE", padding: "1px 6px", borderRadius: 4 }}>{c.role}</span></span>
+                    <span style={{ fontSize: 14, color: "#6B7280" }}>{c.voteCount}표 ({totalVotes > 0 ? ((c.voteCount / totalVotes) * 100).toFixed(1) : 0}%)</span>
+                  </div>
+                  <div style={{ background: "#F3F4F6", borderRadius: 4, height: 40, overflow: "hidden" }}>
+                    <div style={{ width: `${totalVotes > 0 ? (c.voteCount / maxVotes) * 100 : 0}%`, height: "100%", background: c.voteCount === maxVotes && c.voteCount > 0 ? "#5B21B6" : "#7C3AED", borderRadius: "0 4px 4px 0", transition: "width 0.8s ease" }} />
+                  </div>
+                </div>
+              ))}
+              {candidates.length === 0 && <p style={{ color: "#9CA3AF", textAlign: "center" }}>후보자가 없습니다</p>}
             </div>
-
-            <p className="mt-6 text-sm text-[#6B7280] flex items-center gap-2">
-              ⚠️ 투표 마감 후 최종 결과가 확정됩니다
-            </p>
+            <p style={{ fontSize: 13, color: "#9CA3AF", marginTop: 16 }}>⚠️ 투표 마감 후 최종 결과가 확정됩니다</p>
           </div>
         )}
 
-        {/* Tab 3: Admin */}
+        {/* 관리자 탭 */}
         {activeTab === "admin" && (
-          <div className="space-y-8">
-            {/* Section A: Voter Registration */}
-            <section className="bg-white rounded-xl border border-[#E5E7EB] p-6">
-              <h3 className="text-lg font-semibold text-[#111827] mb-4">
-                유권자 등록
-              </h3>
-              <div className="flex gap-3 mb-4">
-                <input
-                  type="text"
-                  placeholder="지갑 주소 입력 (0x...)"
-                  value={newVoterAddress}
-                  onChange={(e) => setNewVoterAddress(e.target.value)}
-                  className="flex-1 px-4 py-2.5 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#7C3AED] focus:border-transparent"
-                />
-                <button
-                  onClick={addVoter}
-                  className="px-4 py-2.5 bg-[#7C3AED] text-white text-sm font-medium rounded-lg hover:bg-[#5B21B6] transition-colors"
-                >
-                  등록하기
-                </button>
-              </div>
-              <div className="max-h-[200px] overflow-y-auto space-y-2">
-                {voters.map((voter) => (
-                  <div
-                    key={voter.id}
-                    className="flex items-center justify-between py-2 px-3 bg-[#F9FAFB] rounded-lg"
-                  >
-                    <span className="text-sm font-mono text-[#6B7280]">
-                      {voter.address}
-                    </span>
-                    <button
-                      onClick={() => removeVoter(voter.id)}
-                      className="text-sm text-red-500 hover:text-red-700 flex items-center gap-1"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      삭제
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            {/* Section B: Candidate Registration */}
-            <section className="bg-white rounded-xl border border-[#E5E7EB] p-6">
-              <h3 className="text-lg font-semibold text-[#111827] mb-4">
-                후보자 등록
-              </h3>
-              <div className="grid grid-cols-2 gap-3 mb-3">
-                <input
-                  type="text"
-                  placeholder="이름"
-                  value={newCandidateName}
-                  onChange={(e) => setNewCandidateName(e.target.value)}
-                  className="px-4 py-2.5 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#7C3AED] focus:border-transparent"
-                />
-                <input
-                  type="text"
-                  placeholder="직책"
-                  value={newCandidateRole}
-                  onChange={(e) => setNewCandidateRole(e.target.value)}
-                  className="px-4 py-2.5 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#7C3AED] focus:border-transparent"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-3 mb-3">
-                <input
-                  type="number"
-                  placeholder="기호번호"
-                  value={newCandidateNumber}
-                  onChange={(e) => setNewCandidateNumber(e.target.value)}
-                  className="px-4 py-2.5 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#7C3AED] focus:border-transparent"
-                />
-                <input
-                  type="text"
-                  placeholder="소개글"
-                  value={newCandidateBio}
-                  onChange={(e) => setNewCandidateBio(e.target.value)}
-                  className="px-4 py-2.5 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#7C3AED] focus:border-transparent"
-                />
-              </div>
-              <button
-                onClick={addCandidate}
-                className="px-4 py-2.5 bg-[#7C3AED] text-white text-sm font-medium rounded-lg hover:bg-[#5B21B6] transition-colors"
-              >
-                후보 추가
-              </button>
-
-              <div className="mt-4 space-y-2">
-                {candidates.map((candidate) => (
-                  <div
-                    key={candidate.id}
-                    className="flex items-center justify-between py-2 px-3 bg-[#F9FAFB] rounded-lg"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="text-xs bg-[#EDE9FE] text-[#7C3AED] px-2 py-0.5 rounded font-medium">
-                        기호 {candidate.number}
-                      </span>
-                      <span className="text-sm font-medium text-[#111827]">
-                        {candidate.name}
-                      </span>
-                      <span className="text-sm text-[#6B7280]">
-                        {candidate.role}
-                      </span>
-                    </div>
-                    <button
-                      onClick={() => removeCandidate(candidate.id)}
-                      className="text-sm text-red-500 hover:text-red-700 flex items-center gap-1"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      삭제
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            {/* Section C: Election Settings */}
-            <section className="bg-white rounded-xl border border-[#E5E7EB] p-6">
-              <h3 className="text-lg font-semibold text-[#111827] mb-4">
-                선거 설정
-              </h3>
-              <div className="grid grid-cols-2 gap-4 mb-4">
-                <div>
-                  <label className="block text-sm font-medium text-[#6B7280] mb-2">
-                    시작 시간
-                  </label>
-                  <input
-                    type="datetime-local"
-                    value={startTime}
-                    onChange={(e) => setStartTime(e.target.value)}
-                    className="w-full px-4 py-2.5 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#7C3AED] focus:border-transparent"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-[#6B7280] mb-2">
-                    종료 시간
-                  </label>
-                  <input
-                    type="datetime-local"
-                    value={endTime}
-                    onChange={(e) => setEndTime(e.target.value)}
-                    className="w-full px-4 py-2.5 border border-[#E5E7EB] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#7C3AED] focus:border-transparent"
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between py-3 px-4 bg-[#F9FAFB] rounded-lg mb-4">
-                <span className="text-sm font-medium text-[#111827]">
-                  선거 활성화
-                </span>
-                <button
-                  onClick={() => setIsElectionActive(!isElectionActive)}
-                  className={`relative w-11 h-6 rounded-full transition-colors ${
-                    isElectionActive ? "bg-[#7C3AED]" : "bg-[#D1D5DB]"
-                  }`}
-                >
-                  <span
-                    className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                      isElectionActive ? "translate-x-5" : "translate-x-0"
-                    }`}
-                  />
-                </button>
-              </div>
-
-              <button className="px-4 py-2.5 bg-[#7C3AED] text-white text-sm font-medium rounded-lg hover:bg-[#5B21B6] transition-colors">
-                설정 저장
-              </button>
-            </section>
-          </div>
-        )}
-      </main>
-
-      {/* Toast Notification */}
-      {showToast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-green-600 text-white px-6 py-3 rounded-lg shadow-lg text-sm font-medium animate-in fade-in slide-in-from-bottom-4">
-          투표가 완료되었습니다 ✓
-        </div>
-      )}
-
-      {/* Confirmation Modal */}
-      {confirmModal.isOpen && confirmModal.candidate && (
-        <div
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-          onClick={cancelVote}
-        >
-          <div
-            className="bg-white rounded-xl p-6 w-full max-w-sm mx-4 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="text-lg font-semibold text-[#111827] mb-2 text-center">
-              투표 확인
-            </h3>
-            <p className="text-sm text-[#6B7280] mb-6 text-center">
-              {confirmModal.candidate.name} 후보에게 투표하시겠습니까?
-            </p>
-            <div className="flex gap-3">
-              <button
-                onClick={cancelVote}
-                className="flex-1 py-2.5 rounded-lg text-sm font-medium border border-[#E5E7EB] text-[#6B7280] hover:bg-[#F9FAFB] transition-colors"
-              >
-                취소
-              </button>
-              <button
-                onClick={confirmVote}
-                className="flex-1 py-2.5 rounded-lg text-sm font-medium bg-[#7C3AED] text-white hover:bg-[#5B21B6] transition-colors"
-              >
-                투표 확인
-              </button>
+          <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+            <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #E5E7EB", padding: 24 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>후보자 등록</h3>
+              <AdminCandidateForm contract={contract} onSuccess={() => { loadCandidates(); showToast("후보자가 등록되었습니다"); }} />
+            </div>
+            <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #E5E7EB", padding: 24 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>유권자 등록</h3>
+              <AdminVoterForm contract={contract} onSuccess={() => showToast("유권자가 등록되었습니다")} />
+            </div>
+            <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #E5E7EB", padding: 24 }}>
+              <h3 style={{ fontSize: 16, fontWeight: 600, marginBottom: 16 }}>선거 시작</h3>
+              <AdminElectionForm contract={contract} onSuccess={() => showToast("선거가 시작되었습니다")} />
             </div>
           </div>
+        )}
+      </div>
+
+      {toast && (
+        <div style={{ position: "fixed", bottom: 32, left: "50%", transform: "translateX(-50%)", background: "#10B981", color: "#fff", padding: "12px 24px", borderRadius: 8, fontSize: 14, fontWeight: 500 }}>
+          {toast}
         </div>
       )}
     </div>
-  )
+  );
+}
+
+function AdminCandidateForm({ contract, onSuccess }: any) {
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("");
+  const add = async () => {
+    if (!contract || !name || !role) return;
+    try {
+      const tx = await contract.addCandidate(name, role);
+      await tx.wait();
+      setName(""); setRole("");
+      onSuccess();
+    } catch (e: any) { alert("오류: " + (e.reason || e.message)); }
+  };
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      <input value={name} onChange={e => setName(e.target.value)} placeholder="이름" style={{ flex: 1, padding: "8px 12px", border: "1px solid #E5E7EB", borderRadius: 8, fontSize: 14, minWidth: 120 }} />
+      <input value={role} onChange={e => setRole(e.target.value)} placeholder="직책 (예: 회장)" style={{ flex: 1, padding: "8px 12px", border: "1px solid #E5E7EB", borderRadius: 8, fontSize: 14, minWidth: 120 }} />
+      <button onClick={add} style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontSize: 14 }}>후보 추가</button>
+    </div>
+  );
+}
+
+function AdminVoterForm({ contract, onSuccess }: any) {
+  const [address, setAddress] = useState("");
+  const register = async () => {
+    if (!contract || !address) return;
+    try {
+      const tx = await contract.registerVoter(address);
+      await tx.wait();
+      setAddress("");
+      onSuccess();
+    } catch (e: any) { alert("오류: " + (e.reason || e.message)); }
+  };
+  return (
+    <div style={{ display: "flex", gap: 8 }}>
+      <input value={address} onChange={e => setAddress(e.target.value)} placeholder="지갑 주소 (0x...)" style={{ flex: 1, padding: "8px 12px", border: "1px solid #E5E7EB", borderRadius: 8, fontSize: 14 }} />
+      <button onClick={register} style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontSize: 14 }}>등록하기</button>
+    </div>
+  );
+}
+
+function AdminElectionForm({ contract, onSuccess }: any) {
+  const [minutes, setMinutes] = useState("60");
+  const start = async () => {
+    if (!contract) return;
+    try {
+      const tx = await contract.startElection(Number(minutes));
+      await tx.wait();
+      onSuccess();
+    } catch (e: any) { alert("오류: " + (e.reason || e.message)); }
+  };
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <input value={minutes} onChange={e => setMinutes(e.target.value)} placeholder="투표 시간 (분)" type="number" style={{ width: 160, padding: "8px 12px", border: "1px solid #E5E7EB", borderRadius: 8, fontSize: 14 }} />
+      <span style={{ fontSize: 14, color: "#6B7280" }}>분 동안 진행</span>
+      <button onClick={start} style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontSize: 14 }}>선거 시작</button>
+    </div>
+  );
 }
