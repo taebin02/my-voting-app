@@ -3,7 +3,7 @@ import { useState, useEffect } from "react";
 import { ethers } from "ethers";
 import VotingABI from "../lib/Voting.json";
 
-const CONTRACT_ADDRESS = "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9";
+const CONTRACT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
 
 export default function Home() {
   const [account, setAccount] = useState<string>("");
@@ -40,7 +40,7 @@ export default function Home() {
       const list = [];
       for (let i = 0; i < Number(count); i++) {
         const c = await contract.candidates(i);
-        list.push({ name: c.name, role: c.role, voteCount: Number(c.voteCount) });
+        list.push({ name: c.name, role: c.role, pledge: c.pledge, voteCount: Number(c.voteCount) });
       }
       setCandidates(list);
     } catch (e) { console.error("loadCandidates error:", e); }
@@ -67,7 +67,6 @@ export default function Home() {
   useEffect(() => { if (contract) loadCandidates(); }, [contract]);
   useEffect(() => { if (contract && activeTab === "results") loadCandidates(); }, [activeTab]);
 
-  // 남은 시간 카운트다운
   useEffect(() => {
     if (!contract) return;
     let interval: NodeJS.Timeout;
@@ -99,7 +98,6 @@ export default function Home() {
 
   return (
     <div style={{ fontFamily: "Inter, sans-serif", background: "#F9FAFB", minHeight: "100vh" }}>
-      {/* 네비게이션 */}
       <nav style={{ background: "#fff", borderBottom: "1px solid #E5E7EB", padding: "0 32px", height: 64, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span style={{ fontWeight: 600, fontSize: 18 }}>🗳️ 학급 임원 선거 2026</span>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -121,7 +119,6 @@ export default function Home() {
         </div>
       </nav>
 
-      {/* 탭 */}
       <div style={{ background: "#fff", borderBottom: "1px solid #E5E7EB", padding: "0 32px", display: "flex", gap: 0 }}>
         {[["vote", "투표하기"], ["results", "실시간 결과"], ["admin", "관리자"]].map(([key, label]) => (
           <button key={key} onClick={() => setActiveTab(key)} style={{ padding: "16px 20px", border: "none", background: "none", cursor: "pointer", fontSize: 14, fontWeight: 500, color: activeTab === key ? "#7C3AED" : "#6B7280", borderBottom: activeTab === key ? "2px solid #7C3AED" : "2px solid transparent" }}>
@@ -132,7 +129,6 @@ export default function Home() {
 
       <div style={{ maxWidth: 800, margin: "0 auto", padding: 32 }}>
 
-        {/* 투표하기 탭 */}
         {activeTab === "vote" && (
           <div>
             <h2 style={{ fontSize: 22, fontWeight: 600, marginBottom: 4 }}>후보자를 선택하세요</h2>
@@ -149,6 +145,11 @@ export default function Home() {
                     <span style={{ background: "#EDE9FE", color: "#7C3AED", fontSize: 11, fontWeight: 500, padding: "2px 8px", borderRadius: 6 }}>기호 {i + 1}번</span>
                     <h3 style={{ fontSize: 18, fontWeight: 600, margin: "8px 0 4px" }}>{c.name}</h3>
                     <p style={{ color: "#7C3AED", fontSize: 13, margin: "0 0 8px" }}>{c.role}</p>
+                    {c.pledge && (
+                      <p style={{ color: "#374151", fontSize: 13, margin: "0 0 12px", background: "#F9FAFB", padding: "8px 10px", borderRadius: 6, lineHeight: 1.5 }}>
+                        📋 {c.pledge}
+                      </p>
+                    )}
                     <button onClick={() => !hasVoted && vote(i)} disabled={hasVoted || loading} style={{ width: "100%", padding: "10px", border: "1px solid #7C3AED", borderRadius: 8, background: hasVoted ? "#F3F4F6" : "#fff", color: hasVoted ? "#9CA3AF" : "#7C3AED", cursor: hasVoted ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 500 }}>
                       {loading ? "처리중..." : hasVoted ? "투표 완료" : "투표하기"}
                     </button>
@@ -159,7 +160,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* 실시간 결과 탭 */}
         {activeTab === "results" && (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
@@ -169,8 +169,6 @@ export default function Home() {
                 LIVE
               </span>
             </div>
-
-            {/* 남은 시간 카드 */}
             {remainingTime && (
               <div style={{ background: remainingTime === "투표 종료" ? "#FEE2E2" : "#EDE9FE", borderRadius: 12, padding: 20, marginBottom: 24, textAlign: "center" }}>
                 <p style={{ fontSize: 13, color: "#6B7280", margin: "0 0 8px" }}>남은 투표 시간</p>
@@ -179,7 +177,6 @@ export default function Home() {
                 </p>
               </div>
             )}
-
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}>
               {[["총 유권자", `${totalVoters}명`, "#EDE9FE"], ["투표 완료", `${totalVotes}명`, "#E0F2FE"], ["투표율", `${turnout}%`, "#D1FAE5"]].map(([label, value, bg]) => (
                 <div key={label} style={{ background: bg, borderRadius: 12, padding: 20 }}>
@@ -207,7 +204,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* 관리자 탭 */}
         {activeTab === "admin" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
             <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #E5E7EB", padding: 24 }}>
@@ -238,12 +234,13 @@ export default function Home() {
 function AdminCandidateForm({ contract, onSuccess }: any) {
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
+  const [pledge, setPledge] = useState("");
   const add = async () => {
-    if (!contract || !name || !role) return;
+    if (!contract || !name || !role || !pledge) return;
     try {
-      const tx = await contract.addCandidate(name, role);
+      const tx = await contract.addCandidate(name, role, pledge);
       await tx.wait();
-      setName(""); setRole("");
+      setName(""); setRole(""); setPledge("");
       onSuccess();
     } catch (e: any) { alert("오류: " + (e.reason || e.message)); }
   };
@@ -251,6 +248,7 @@ function AdminCandidateForm({ contract, onSuccess }: any) {
     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
       <input value={name} onChange={e => setName(e.target.value)} placeholder="이름" style={{ flex: 1, padding: "8px 12px", border: "1px solid #E5E7EB", borderRadius: 8, fontSize: 14, minWidth: 120 }} />
       <input value={role} onChange={e => setRole(e.target.value)} placeholder="직책 (예: 회장)" style={{ flex: 1, padding: "8px 12px", border: "1px solid #E5E7EB", borderRadius: 8, fontSize: 14, minWidth: 120 }} />
+      <input value={pledge} onChange={e => setPledge(e.target.value)} placeholder="공약 입력" style={{ width: "100%", padding: "8px 12px", border: "1px solid #E5E7EB", borderRadius: 8, fontSize: 14 }} />
       <button onClick={add} style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontSize: 14 }}>후보 추가</button>
     </div>
   );
