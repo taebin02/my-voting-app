@@ -88,7 +88,6 @@ export default function Home() {
     if (remainingTime === "투표 종료" && contract) loadWinner();
   }, [remainingTime, contract]);
 
-  // 남은 시간 카운트다운
   useEffect(() => {
     if (!contract) return;
     let interval: NodeJS.Timeout;
