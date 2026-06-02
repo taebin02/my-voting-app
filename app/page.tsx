@@ -15,6 +15,7 @@ export default function Home() {
   const [toast, setToast] = useState("");
   const [totalVoters, setTotalVoters] = useState(0);
   const [remainingTime, setRemainingTime] = useState<string>("");
+  const [winner, setWinner] = useState("");
 
   const connectWallet = async () => {
     if (!(window as any).ethereum) { alert("MetaMask를 설치해주세요!"); return; }
@@ -46,6 +47,16 @@ export default function Home() {
     } catch (e) { console.error("loadCandidates error:", e); }
   };
 
+  const loadWinner = async () => {
+    if (!contract) return;
+    try {
+      const winnerName = await contract.getWinner();
+      setWinner(winnerName);
+    } catch (e) {
+      setWinner("");
+    }
+  };
+
   const vote = async (index: number) => {
     if (!contract) { alert("지갑을 먼저 연결해주세요!"); return; }
     setLoading(true);
@@ -64,31 +75,45 @@ export default function Home() {
     setTimeout(() => setToast(""), 3000);
   };
 
+  // 컨트랙트 연결 시 후보자 로드
   useEffect(() => { if (contract) loadCandidates(); }, [contract]);
-  useEffect(() => { if (contract && activeTab === "results") loadCandidates(); }, [activeTab]);
 
+  // 실시간 결과 탭 진입 시 후보자 로드
+  useEffect(() => {
+    if (contract && activeTab === "results") loadCandidates();
+  }, [activeTab, contract]);
+
+  // 투표 종료 시 당선자 로드
+  useEffect(() => {
+    if (remainingTime === "투표 종료" && contract) loadWinner();
+  }, [remainingTime, contract]);
+
+  // 남은 시간 카운트다운
   useEffect(() => {
     if (!contract) return;
     let interval: NodeJS.Timeout;
+
     const fetchEndTime = async () => {
       try {
         const endTime = await contract.endTime();
-        interval = setInterval(() => {
-          const now = Math.floor(Date.now() / 1000);
-          const diff = Number(endTime) - now;
-          if (diff <= 0) {
-            setRemainingTime("투표 종료");
-            clearInterval(interval);
-          } else {
-            const h = Math.floor(diff / 3600);
-            const m = Math.floor((diff % 3600) / 60);
-            const s = diff % 60;
-            setRemainingTime(`${h}시간 ${m}분 ${s}초`);
-          }
-        }, 1000);
+        const now = Math.floor(Date.now() / 1000);
+        const diff = Number(endTime) - now;
+
+        if (Number(endTime) === 0) {
+          setRemainingTime("선거 시작 전");
+        } else if (diff <= 0) {
+          setRemainingTime("투표 종료");
+        } else {
+          const h = Math.floor(diff / 3600);
+          const m = Math.floor((diff % 3600) / 60);
+          const s = diff % 60;
+          setRemainingTime(`${h}시간 ${m}분 ${s}초`);
+        }
       } catch (e) { console.error(e); }
     };
+
     fetchEndTime();
+    interval = setInterval(fetchEndTime, 1000);
     return () => clearInterval(interval);
   }, [contract]);
 
@@ -200,6 +225,12 @@ export default function Home() {
               ))}
               {candidates.length === 0 && <p style={{ color: "#9CA3AF", textAlign: "center" }}>후보자가 없습니다</p>}
             </div>
+            {winner && (
+              <div style={{ marginTop: 24, background: "#EDE9FE", borderRadius: 12, padding: 24, textAlign: "center", border: "1px solid #DDD6FE" }}>
+                <div style={{ fontSize: 18, fontWeight: 600, color: "#5B21B6", marginBottom: 8 }}>🏆 최종 당선자</div>
+                <div style={{ fontSize: 32, fontWeight: 700, color: "#111827" }}>{winner}</div>
+              </div>
+            )}
             <p style={{ fontSize: 13, color: "#9CA3AF", marginTop: 16 }}>⚠️ 투표 마감 후 최종 결과가 확정됩니다</p>
           </div>
         )}
